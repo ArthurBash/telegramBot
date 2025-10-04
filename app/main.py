@@ -92,7 +92,7 @@ class TelegramBotApplication:
         logger.info("Iniciando polling del bot...")
         await self.telegram_app.initialize()
         await self.telegram_app.start()
-        await self.telegram_app.updater.start_polling(drop_pending_updates=True)
+        await self.telegram_app.updater.start_polling(drop_pending_updates=False)
         logger.info(f"Bot iniciado correctamente: @{self.telegram_app.bot.username}")
     
     async def stop(self):
