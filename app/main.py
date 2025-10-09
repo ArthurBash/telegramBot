@@ -16,7 +16,8 @@ from app.bot.handlers import (
     TelegramMessageHandler,
     CategoryManagementHandler,
     StatisticsHandler,
-    ExportHandler
+    ExportHandler,
+    KeywordManagementHandler
 )
 from app.utils import LoggerConfig
 
@@ -49,6 +50,10 @@ class TelegramBotApplication:
         )
         
         self.export_handler = ExportHandler(
+            db_session_factory=self.db_manager.get_session
+        )
+
+        self.keyword_management = KeywordManagementHandler(
             db_session_factory=self.db_manager.get_session
         )
     
@@ -84,10 +89,34 @@ class TelegramBotApplication:
             CommandHandler("export_categories", self.export_handler.handle_export_categories)
         )
         
+
+        self.telegram_app.add_handler(
+            CommandHandler(["add_keyword", "ak"], self.keyword_management.handle_add_keywords)
+        )
+
+        self.telegram_app.add_handler(
+            CommandHandler(["delete_keyword", "dk"], self.keyword_management.handle_remove_keywords)
+        )
+
         self.telegram_app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.message_handler.handle_message)
         )
-    
+
+    async def _setup_bot_commands(self):
+        """Configura el menú de comandos visible en Telegram."""
+        try:
+            await self.telegram_app.bot.set_my_commands([
+                ("add_category","ac", "📁 Crear categoría completa"),
+                ("add_keyword", "ak", "➕ Agregar palabras clave"),
+                ("delete_keyword","dk", "➖ Eliminar palabras clave"),
+                ("list_categories", "lc","📋 Listar categorías"),
+                ("delete_category","dc", "🗑️ Eliminar categoría"),
+                ("stats","s", "📊 Ver estadísticas"),
+                ("export_categories", "💾 Exportar a CSV"),
+            ])
+        except Exception as e:
+            logger.error(f"Error configurando comandos del menú: {e}")
+        
     async def start_polling(self):
         logger.info("Iniciando polling del bot...")
         await self.telegram_app.initialize()

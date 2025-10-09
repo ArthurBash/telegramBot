@@ -275,3 +275,250 @@ class ExportHandler:
             )
             
             self.logger.info("Categorías exportadas a CSV")
+
+
+"""
+Handler especializado para gestión de palabras clave.
+Agregar esta clase completa al archivo handlers.py
+"""
+
+from datetime import datetime
+from telegram import Update
+from telegram.ext import ContextTypes
+from sqlalchemy import select
+
+from app.models import Category
+from app.utils import LoggerConfig, StringHelper, FormatterHelper, ValidationHelper
+
+
+class KeywordManagementHandler:
+    """
+    Handler para gestión avanzada de palabras clave.
+    Permite agregar, actualizar y modificar keywords de categorías.
+    """
+    
+    def __init__(self, db_session_factory):
+        self.db_session_factory = db_session_factory
+        self.logger = LoggerConfig.setup_logger(__name__)
+    
+    async def handle_add_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Agrega palabras clave a una categoría existente o crea una nueva.
+        Uso: /ak <nombre_categoria> <palabra1, palabra2, ...>
+        """
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "❌ *Uso incorrecto*\n\n"
+                "`/ak <categoria> <palabra1, palabra2, ...>`\n\n"
+                "*Ejemplos:*\n"
+                "• `/ak trabajo reunión, meeting, oficina`\n"
+                "• `/ak personal familia, amigos, casa`\n\n"
+                "💡 Si la categoría existe, agrega las palabras clave\n"
+                "💡 Si no existe, crea la categoría automáticamente",
+                parse_mode='Markdown'
+            )
+            return
+        
+        category_name = context.args[0].lower()
+        keywords_text = " ".join(context.args[1:])
+        new_keywords = StringHelper.string_to_keywords(keywords_text)
+        
+        # Validaciones
+        if not ValidationHelper.is_valid_category_name(category_name):
+            await update.message.reply_text(
+                "❌ Nombre de categoría inválido.\n"
+                "Solo se permiten: letras, números, guiones y guiones bajos."
+            )
+            return
+        
+        if not new_keywords:
+            await update.message.reply_text(
+                "❌ Debes proporcionar al menos una palabra clave."
+            )
+            return
+        
+        async with self.db_session_factory() as session:
+            result = await session.execute(
+                select(Category).where(Category.name == category_name)
+            )
+            existing_category = result.scalar_one_or_none()
+            
+            if existing_category:
+                # Actualizar categoría existente
+                await self._update_existing_category(
+                    update, session, existing_category, new_keywords
+                )
+            else:
+                # Crear nueva categoría
+                await self._create_new_category(
+                    update, session, category_name, new_keywords
+                )
+    
+    async def _update_existing_category(
+        self, 
+        update: Update, 
+        session, 
+        category: Category, 
+        new_keywords: list[str]
+    ):
+        """Actualiza una categoría existente agregando nuevas keywords."""
+        current_keywords = set(category.keywords)
+        keywords_added = []
+        keywords_duplicated = []
+        
+        for keyword in new_keywords:
+            if keyword not in current_keywords:
+                current_keywords.add(keyword)
+                keywords_added.append(keyword)
+            else:
+                keywords_duplicated.append(keyword)
+        
+        if not keywords_added:
+            await update.message.reply_text(
+                f"ℹ️ *Categoría:* `{category.name}`\n\n"
+                f"Todas las palabras clave ya existen.\n\n"
+                f"🔄 Duplicadas: {', '.join(keywords_duplicated)}",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Actualizar la categoría
+        category.keywords = list(current_keywords)
+        # Solo actualiza updated_at si tu modelo lo tiene
+        if hasattr(category, 'updated_at'):
+            category.updated_at = datetime.utcnow()
+        
+        await session.commit()
+        
+        self.logger.info(
+            f"Keywords agregadas a '{category.name}': "
+            f"{len(keywords_added)} nuevas, {len(keywords_duplicated)} duplicadas"
+        )
+        
+        # Construir respuesta
+        response = [
+            f"✅ *Categoría actualizada:* `{category.name}`\n",
+            f"🆕 *Agregadas ({len(keywords_added)}):*",
+            f"   {', '.join(keywords_added)}\n"
+        ]
+        
+        if keywords_duplicated:
+            response.append(f"⚠️ *Ya existían ({len(keywords_duplicated)}):*")
+            response.append(f"   {', '.join(keywords_duplicated)}\n")
+        
+        response.append(f"📊 *Total de palabras clave:* {len(current_keywords)}")
+        
+        await update.message.reply_text(
+            "\n".join(response),
+            parse_mode='Markdown'
+        )
+    
+    async def _create_new_category(
+        self, 
+        update: Update, 
+        session, 
+        category_name: str, 
+        keywords: list[str]
+    ):
+        """Crea una nueva categoría con las palabras clave proporcionadas."""
+        new_category = Category(
+            name=category_name,
+            keywords=keywords
+        )
+        session.add(new_category)
+        await session.commit()
+        
+        self.logger.info(
+            f"Categoría creada via /ak: {category_name} con {len(keywords)} keywords"
+        )
+        
+        formatted_info = FormatterHelper.format_category_info(category_name, keywords)
+        
+        await update.message.reply_text(
+            f"✨ *Nueva categoría creada*\n\n{formatted_info}",
+            parse_mode='Markdown'
+        )
+    
+    async def handle_remove_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Elimina palabras clave de una categoría existente.
+        Uso: /rk <nombre_categoria> <palabra1, palabra2, ...>
+        """
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "❌ *Uso incorrecto*\n\n"
+                "`/rk <categoria> <palabra1, palabra2, ...>`\n\n"
+                "*Ejemplo:*\n"
+                "• `/rk trabajo reunión, meeting`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        category_name = context.args[0].lower()
+        keywords_text = " ".join(context.args[1:])
+        keywords_to_remove = StringHelper.string_to_keywords(keywords_text)
+        
+        async with self.db_session_factory() as session:
+            result = await session.execute(
+                select(Category).where(Category.name == category_name)
+            )
+            category = result.scalar_one_or_none()
+            
+            if not category:
+                await update.message.reply_text(
+                    f"❌ La categoría `{category_name}` no existe.",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            current_keywords = set(category.keywords)
+            removed = []
+            not_found = []
+            
+            for keyword in keywords_to_remove:
+                if keyword in current_keywords:
+                    current_keywords.remove(keyword)
+                    removed.append(keyword)
+                else:
+                    not_found.append(keyword)
+            
+            if not removed:
+                await update.message.reply_text(
+                    f"ℹ️ Ninguna palabra clave fue eliminada.\n"
+                    f"No encontradas: {', '.join(not_found)}"
+                )
+                return
+            
+            if len(current_keywords) == 0:
+                await update.message.reply_text(
+                    f"⚠️ No puedes eliminar todas las palabras clave.\n"
+                    f"La categoría debe tener al menos una palabra clave."
+                )
+                return
+            
+            category.keywords = list(current_keywords)
+            if hasattr(category, 'updated_at'):
+                category.updated_at = datetime.utcnow()
+            
+            await session.commit()
+            
+            self.logger.info(
+                f"Keywords eliminadas de '{category_name}': {len(removed)}"
+            )
+            
+            response = [
+                f"✅ *Palabras clave eliminadas de:* `{category_name}`\n",
+                f"🗑️ *Eliminadas ({len(removed)}):*",
+                f"   {', '.join(removed)}\n"
+            ]
+            
+            if not_found:
+                response.append(f"⚠️ *No encontradas ({len(not_found)}):*")
+                response.append(f"   {', '.join(not_found)}\n")
+            
+            response.append(f"📊 *Total restante:* {len(current_keywords)}")
+            
+            await update.message.reply_text(
+                "\n".join(response),
+                parse_mode='Markdown'
+            )
